@@ -1,0 +1,7 @@
+{
+    "workbench.editor.wrapTabs": true,
+    "terminal.integrated.commandsToSkipShell": [
+        ""
+    ],
+    "editor.formatOnSave": true
+}
