@@ -1,56 +1,44 @@
 # Copilot instructions for WinWoL
 
-This project is a single WinUI3 desktop app (solution: `WinWoL.sln`) with one main project at `WinWoL/WinWoL`. The guidance below highlights architecture, common patterns, build/run steps, and examples an AI coding agent should follow when editing or extending the codebase.
+WinWoL is a single WinUI 3 desktop application (solution: `WinWoL.sln`) with one UI project at `WinWoL/WinWoL`.
+These instructions highlight the architecture, platform specifics, code patterns, and common workflows an AI coding agent should follow when making edits.
 
-- **Big picture**: UI lives in `WinWoL/WinWoL/Pages` and `Pages/Dialogs` (XAML + code-behind). App startup and window handle are in `WinWoL/WinWoL/App.xaml.cs` (important: `App.m_window` is created here). Business logic helpers are plain C# classes in `WinWoL/WinWoL/Methods`. Persistent data is via a local SQLite DB managed by `WinWoL/WinWoL/Datas/SQLiteHelper.cs` and models live in `WinWoL/WinWoL/Models`.
+- **Big picture**: UI pages live in `WinWoL/WinWoL/Pages` and dialogs in `WinWoL/WinWoL/Pages/Dialogs` (XAML + code-behind). App lifecycle and the static window handle are in [App.xaml.cs](../WinWoL/WinWoL/App.xaml.cs#L1-L60) — `App.m_window` is created here and used wherever a native HWND is required. Business logic helpers are in `WinWoL/WinWoL/Methods`. Persistent data lives in `WinWoL/WinWoL/Datas/SQLiteHelper.cs` and models in `WinWoL/WinWoL/Models`.
 
-- **Build & run (recommended)**
-  - Preferred: Open `WinWoL.sln` in Visual Studio (recommended for WinUI + MSIX tooling).
-   # Copilot instructions for WinWoL
+**Build & Run (recommended)**
+  - Preferred: Open `WinWoL.sln` in Visual Studio (recommended for WinUI, Windows App SDK and MSIX packaging).
+    - `dotnet restore`
+    - `dotnet build WinWoL.sln -c Debug`
+    - To publish a self-contained build: `dotnet publish WinWoL/WinWoL.csproj -c Release -r win-x64 --self-contained`
+  - Packaging + debug: this project uses Windows App SDK and MSIX packaging. The csproj has MSIX tooling enabled: see [WinWoL/WinWoL.csproj](../WinWoL/WinWoL/WinWoL.csproj#L1-L40). Use Visual Studio for packaging/signing and to create test installers.
 
-   Short, actionable notes to help an AI coding agent be productive quickly.
+- **Key dependencies** (see csproj): `Microsoft.WindowsAppSDK`, `Microsoft.Data.Sqlite`, `Newtonsoft.Json`, `Renci.SshNet` (SSH.NET), `PInvoke.User32`.
 
-   - **Project shape**: single WinUI3 desktop app. Main project: `WinWoL/WinWoL` (solution: `WinWoL.sln`). UI XAML+code-behind live in `WinWoL/WinWoL/Pages` and dialogs in `WinWoL/WinWoL/Pages/Dialogs`.
+**Runtime / integration patterns to preserve**
+  - File pickers require a window handle: the code attaches pickers with `WinRT.Interop.InitializeWithWindow` using the `App.m_window` HWND (examples: [WoLMethod.ExportConfig](../WinWoL/WinWoL/Methods/WoLMethod.cs#L1-L120), [SSHMethod.ExportConfig](../WinWoL/WinWoL/Methods/SSHMethod.cs#L1-L60)). Avoid invoking pickers before the window exists.
+  - UI updates from background threads use `DispatcherQueue.TryEnqueue` (see [WoL.xaml.cs](../WinWoL/WinWoL/Pages/WoL.xaml.cs#L1-L40)). Maintain UI-thread marshalling when modifying controls.
+  - `SQLiteHelper` uses a relative `Data Source=wol.db` and runs schema checks in the constructor and `UpgradeDatabase` (see [SQLiteHelper.cs](../WinWoL/WinWoL/Datas/SQLiteHelper.cs#L1-L60)). Use this helper for all DB access and add migration SQL here when adding columns or changing schemas.
+  - Dialogs are shown using `ContentDialog` patterns with `.XamlRoot` set to the current page, `Style = Application.Current.Resources["DefaultContentDialogStyle"]`, and `DefaultButton` configured (see [AddWoL.xaml.cs](../WinWoL/WinWoL/Pages/Dialogs/AddWoL.xaml.cs#L1-L40) and [AddSSH.xaml.cs](../WinWoL/WinWoL/Pages/Dialogs/AddSSH.xaml.cs#L1-L40)).
 
-   - **Startup & window handle**: `WinWoL/WinWoL/App.xaml.cs` creates a single instance and assigns `App.m_window` (used elsewhere). Do NOT invoke file pickers or WindowNative calls before `App.m_window` is created in `OnLaunched`.
-     - Example: `WinRT.Interop.WindowNative.GetWindowHandle(App.m_window)` is used in `Methods/WoLMethod.cs` and `Methods/SSHMethod.cs` before calling `InitializeWithWindow`.
+**Common code patterns**
+  - Utility classes (`WoLMethod`, `SSHMethod`, `GeneralMethod`) use static members and are invoked directly from pages. Preserve these signatures unless there's a clear reason to change to instance-based services.
+  - Import/export: file flows use `Newtonsoft.Json` + `FileOpenPicker`/`FileSavePicker` with `CachedFileManager.DeferUpdates` and `CompleteUpdatesAsync` (see [WoLMethod.ExportConfig](../WinWoL/WinWoL/Methods/WoLMethod.cs#L40-L140) and [SSHMethod.ExportConfig](../WinWoL/WinWoL/Methods/SSHMethod.cs#L1-L80)). Note: saving to synced folders (OneDrive) may cause `DeferUpdates` issues — keep existing user-facing warnings.
+  - Localization: strings are fetched with `Windows.ApplicationModel.Resources.ResourceLoader` from `.resw` files in `WinWoL/WinWoL/Language/*`. Follow this pattern when adding UI text; prefer resource keys where possible (see [WoL.xaml.cs](../WinWoL/WinWoL/Pages/WoL.xaml.cs#L1-L20)).
 
-   - **Single-instance & window behavior**: App uses `AppInstance.FindOrRegisterForKey(...)` to redirect activations. `App.xaml.cs` also uses `PInvoke.User32` to restore/set foreground and a DPI-aware `SetWindowSize` helper; keep this behavior when modifying startup.
+**Pitfalls and gotchas**
+  - `CachedFileManager` calls can return unexpected results on OneDrive; keep user-facing text and don't rely on the returned status for critical logic.
+  - The codebase often uses `Thread` rather than `Task`/`async` for background work and relies on `DispatcherQueue.TryEnqueue` to update UI. When refactoring to `Task`/`async`, preserve UI dispatch behavior and test concurrency interactions.
+  - `wol.db` is a relative path and behaves differently when running as a packaged MSIX app vs VS debug; test DB and file access flows under both contexts.
+  - Data re-ordering is implemented by swapping row `Id` fields in `SQLiteHelper` (`UpSwapRows` / `DownSwapRows`). Be careful when changing primary-key semantics.
+  - The app enforces single-instance behavior in [App.xaml.cs](../WinWoL/WinWoL/App.xaml.cs#L1-L90) using `AppInstance` and `SetForegroundWindow` via `PInvoke.User32` to focus the existing window.
 
-   - **File pickers & saved files**: All file pickers are UWP pickers initialized with `WinRT.Interop.InitializeWithWindow`. Save flows call `CachedFileManager.DeferUpdates` / `CompleteUpdatesAsync` — these can fail on OneDrive/synced folders; code already returns localized warnings.
+**Where to start for common tasks**
+  - Add a new dialog: copy `Pages/Dialogs/AddWoL.xaml(.cs)` pattern, use `.XamlRoot` and `Application.Current.Resources["DefaultContentDialogStyle"]`, set `DefaultButton`, and wire up data model binding similarly to existing dialogs.
+  - Add a DB column or change schema: update `SQLiteHelper.CreateTableIfNotExists`, and include migration SQL in `UpgradeDatabase` and `UpgradeDatabaseVersion`. Use `GetDatabaseVersion()` to gate migrations, and keep `Data Source=wol.db` awareness in mind.
+  - Add a new background operation that touches UI: use `Task.Run` or `Thread` and always call `DispatcherQueue.TryEnqueue` to update UI. If using file pickers from background flows, ensure you initialize the picker with `App.m_window`.
 
-   - **Data layer**: `Datas/SQLiteHelper.cs` is the single DB helper. Connection string: `Data Source=wol.db` (relative path). Schema creation is in `CreateTableIfNotExists`; migrations run via `UpgradeDatabase()` and version bookkeeping with `UpgradeDatabaseVersion()` / `GetDatabaseVersion()`. Always use this helper for DB operations to preserve schema and migration logic.
+**No automated tests found**: there are no unit tests. For UI or platform changes, test iteratively in Visual Studio: run the packaged version and the Debug/sideloaded app.
 
-   - **Common code patterns**:
-     - Business logic helpers are static-style classes under `Methods/` (e.g., `WoLMethod`, `SSHMethod`, `GeneralMethod`).
-     - Models live in `Models/` (`WoLModel`, `SSHModel`, `SSHPasswdModel`).
-     - Localization: strings read via `Windows.ApplicationModel.Resources.ResourceLoader` and `.resw` files under `Language/*`.
-     - Dialog pattern: create dialog instance, set `dialog.XamlRoot = this.XamlRoot`, `dialog.Style = Application.Current.Resources["DefaultContentDialogStyle"]`, set button text from `ResourceLoader`, then `await dialog.ShowAsync()` (see `Pages/WoL.xaml.cs` and `Pages/Dialogs/AddWoL.xaml.cs`).
+If anything is unclear or you want more examples (e.g., exact lines for a DB migration, sample dialog changes, or the single-instance behavior), tell me which task and I will iterate this file.
 
-   - **Threading & UI updates**: many pages spawn raw `Thread` and update UI via `DispatcherQueue.GetForCurrentThread()` + `_dispatcherQueue.TryEnqueue(...)`. When adding background work prefer `Task.Run` or follow the existing `Thread` + `TryEnqueue` pattern — ensure UI work runs on the UI Dispatcher.
-
-   - **Export/import format**: JSON using `Newtonsoft.Json`. Files use extensions `.wolconfigx` and `.sshconfigx` (see `Methods/WoLMethod.cs` and `Methods/SSHMethod.cs`).
-
-   - **Build / package / debug**:
-     - Recommended: open `WinWoL.sln` in Visual Studio (best for WinUI, MSIX, and debugging).
-     - CLI quick commands:
-       - `dotnet restore`
-       - `dotnet build WinWoL.sln -c Debug`
-       - `dotnet publish WinWoL/WinWoL.csproj -c Release -r win-x64 --self-contained`
-     - Packaging: app uses Windows App SDK / MSIX (`WinWoL/WinWoL.csproj` and `Package.appxmanifest`) — use Visual Studio packaging tooling for signing/store flows.
-
-   - **Key dependencies**: `Microsoft.WindowsAppSDK`, `Microsoft.Data.Sqlite`, `Newtonsoft.Json`, `SSH.NET`, `PInvoke.User32`.
-
-   - **Where to start for common tasks (practical examples)**
-     - Add a dialog: copy `WinWoL/WinWoL/Pages/Dialogs/AddWoL.xaml(.cs)` and follow the `.XamlRoot` + `Style` pattern.
-     - Add a DB column: update `CreateTableIfNotExists` and add migration SQL inside `UpgradeDatabase()`; maintain version logic in `UpgradeDatabaseVersion()` / `GetDatabaseVersion()`.
-     - Add a file picker/save: call `WinRT.Interop.WindowNative.GetWindowHandle(App.m_window)` and `WinRT.Interop.InitializeWithWindow.Initialize(picker, hWnd)` before Pick/Save.
-
-   - **Pitfalls**
-     - Don’t call pickers before `App.m_window` exists.
-     - `CachedFileManager` flows can behave oddly on OneDrive — tests should cover save/load from synced folders.
-     - DB file path is relative — packaged vs VS run contexts differ; test both.
-
-   - **Tests**: there are no automated tests in this repository. Make small, runnable changes and test in Visual Studio.
-
-   If you want, I can expand any section with concrete line-level examples (DB migration snippet, dialog scaffolding, or a safe Task-based refactor of a threaded method). Please tell me which example you want next.
+If any section is unclear or you want me to expand examples (e.g., exact lines to change for a DB migration or a sample dialog implementation), tell me which task and I will iterate this file.
